@@ -6,7 +6,15 @@ const { monorepoResourceNameMapper, tsconfigResolveAliases } = require('../../bu
 
 const outPath = path.resolve(__dirname, 'dist');
 
-const typeshedFallback = path.resolve(__dirname, '..', '..', 'docstubs');
+const { existsSync } = require('fs');
+// docstubs are typeshed with docstrings added, generated with uv; without
+// them, typeshed itself.
+const docstubs = path.resolve(__dirname, '..', '..', 'docstubs');
+const typeshedFallback = existsSync(docstubs)
+    ? docstubs
+    : path.resolve(__dirname, '..', '..', 'packages', 'pyright-internal', 'typeshed-fallback');
+// SwiftPy: the standard library's stubs only, which are a third of the worker.
+const stdlibOnly = process.env.TYPESHED_STDLIB_ONLY === '1';
 
 /**@type {(env: any, argv: { mode: 'production' | 'development' | 'none' }) => Promise<import('@rspack/core').Configuration>}*/
 module.exports = async (_, { mode }) => {
@@ -80,6 +88,11 @@ module.exports = async (_, { mode }) => {
                 'node_modules/typeshed-json': `module.exports = ${JSON.stringify(
                     (await fs.readdir(typeshedFallback, { recursive: true, withFileTypes: true }))
                         .filter((entry) => entry.isFile())
+                        .filter(
+                            (file) =>
+                                !stdlibOnly ||
+                                !path.relative(typeshedFallback, file.parentPath).split(path.sep).includes('stubs')
+                        )
                         .map((file) => [
                             '/' +
                                 path

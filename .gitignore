@@ -159,3 +159,7 @@ docstubs
 
 # zensical output
 site/
+
+# Swift package
+/.build
+/.swiftpm

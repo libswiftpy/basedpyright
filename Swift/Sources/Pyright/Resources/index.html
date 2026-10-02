@@ -1,0 +1,82 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+// Drives basedpyright's web workers for Pyright.swift, as a language client.
+// The worker is fetched as text and started from a blob: a worker can't be
+// started from the app's own URL scheme.
+let nextId = 1, foreground, workerURL;
+const pending = new Map();
+let diagnosticListeners = [];
+const versions = {};
+const send = (message) => foreground.postMessage(message);
+const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
+const request = (method, params) => {
+  const id = nextId++;
+  send({ jsonrpc: "2.0", id, method, params });
+  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+};
+
+function receive(data) {
+  if (data.type === "browser/newWorker") {
+    // Its background thread, which Safari can't start from inside a worker.
+    const background = new Worker(workerURL, { name: "background" });
+    background.postMessage(
+      { type: "browser/boot", mode: "background", initialData: data.initialData, port: data.port },
+      [data.port]
+    );
+  } else if (data.id !== undefined && data.method === undefined) {
+    const call = pending.get(data.id);
+    pending.delete(data.id);
+    data.error ? call.reject(new Error(data.error.message)) : call.resolve(data.result);
+  } else if (data.id !== undefined) {
+    send({ jsonrpc: "2.0", id: data.id, result: data.method === "workspace/configuration" ? [] : null });
+  } else if (data.method === "textDocument/publishDiagnostics") {
+    diagnosticListeners.forEach((listener) => listener(data.params));
+  }
+}
+
+window.start = async (files, config) => {
+  const source = await (await fetch("pyright.worker.js")).text();
+  workerURL = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+  foreground = new Worker(workerURL, { name: "foreground" });
+  foreground.onmessage = (event) => receive(event.data);
+  foreground.postMessage({ type: "browser/boot", mode: "foreground" });
+  files["/src/pyrightconfig.json"] = config;
+  await request("initialize", {
+    processId: 1, rootUri: "file:///src/", rootPath: "/src/",
+    capabilities: { textDocument: { publishDiagnostics: { versionSupport: true }, completion: {} } },
+    initializationOptions: { files },
+  });
+  notify("initialized", {});
+  notify("workspace/didChangeConfiguration", { settings: {} });
+};
+
+// Replaces a document's text, opening it the first time.
+function update(uri, text) {
+  const version = (versions[uri] ?? 0) + 1;
+  versions[uri] = version;
+  if (version === 1) notify("textDocument/didOpen", { textDocument: { uri, languageId: "python", version, text } });
+  else notify("textDocument/didChange", { textDocument: { uri, version }, contentChanges: [{ text }] });
+  return version;
+}
+
+// The document's diagnostics, or null once a later text replaced it.
+window.check = (uri, text) => {
+  const version = update(uri, text);
+  return new Promise((resolve) => {
+    const listener = (params) => {
+      if (params.uri !== uri || params.version === undefined || params.version < version) return;
+      diagnosticListeners = diagnosticListeners.filter((other) => other !== listener);
+      resolve(params.version === version ? params.diagnostics : null);
+    };
+    diagnosticListeners.push(listener);
+  });
+};
+
+window.complete = async (uri, text, line, character) => {
+  update(uri, text);
+  const result = await request("textDocument/completion", { textDocument: { uri }, position: { line, character } });
+  const items = Array.isArray(result) ? result : (result?.items ?? []);
+  return items.map((item) => ({ label: item.label, kind: item.kind ?? 0, sortText: item.sortText ?? item.label }));
+};
+</script>
