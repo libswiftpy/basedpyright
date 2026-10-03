@@ -89,6 +89,28 @@ struct PyrightTests {
         #expect(result == nil)
     }
 
+    @Test func tellsWhetherACallTakesArguments() async throws {
+        let source = "class C:\n    def ping(self) -> None: ...\nC().ping()\nprint()"
+        let ping = try #require(await Self.pyright.signatureHelp(in: source, line: 3, character: 9))
+        #expect(!ping.takesArguments, "\(ping.label)")
+        let print = try #require(await Self.pyright.signatureHelp(in: source, line: 4, character: 6))
+        #expect(print.takesArguments)
+    }
+
+    @Test(arguments: [
+        ("def opt(a: int = 1, *rest: int, **named: int): ...\nopt()", true),
+        ("def req(a: int, b: int = 1): ...\nreq()", false),
+        ("print()", false),
+        ("list()", true),
+    ])
+    func tellsWhetherACallIsMadeWithoutArguments(source: String, canOmit: Bool) async throws {
+        let lastLine = source.split(separator: "\n").count
+        let character = (source.split(separator: "\n").last?.utf16.count ?? 1) - 1
+        let result = try #require(await Self.pyright.signatureHelp(in: source, line: lastLine, character: character))
+        #expect(result.takesArguments)
+        #expect(result.canOmitArguments == canOmit, "\(result.label)")
+    }
+
     @Test func decodesSelectedSignatureAndParameterOverride() throws {
         let result = try #require(Pyright.SignatureHelp([
             "signatures": [
@@ -145,7 +167,7 @@ struct PyrightTests {
 
     @Test func completesFromTheStandardLibrary() async {
         let items = await Self.pyright.completions(in: "import json\njson.lo", line: 2, character: 7)
-        #expect(items.contains { $0.label == "loads" && $0.isCallable })
+        #expect(items.contains { $0.label == "loads" && $0.kind == .function })
     }
 
     @Test func readsChangedFilesAfterReload() async {
@@ -160,6 +182,36 @@ struct PyrightTests {
         let after = await pyright.completions(in: source, line: 2, character: 5)
         #expect(after.map(\.label).contains("second"))
         #expect(!after.map(\.label).contains("first"))
+    }
+
+    @Test func completesModulesAndKeywordsWithTheirKinds() async {
+        let modules = await Self.pyright.completions(in: "import js", line: 1, character: 9)
+        #expect(modules.contains { $0.label == "json" && $0.kind == .module })
+        let keywords = await Self.pyright.completions(in: "impo", line: 1, character: 4)
+        #expect(keywords.contains { $0.label == "import" && $0.kind == .keyword })
+    }
+
+    @Test(arguments: [
+        ("import agents\nagents.Agent.respond", "agents.Agent.respond"),
+        ("import agents\na = agents.Agent()\na.respond", "agents.Agent.respond"),
+        ("from agents import Agent\nAgent", "agents.Agent"),
+        ("import json\njson.loads", "json.loads"),
+        ("import mine\nmine.greet", "mine.greet"),
+        ("'s'.join", "builtins.str.join"),
+    ])
+    func referencesWhatANameIsDeclaredAs(source: String, path: String) async {
+        let pyright = Pyright(files: { [
+            "typings/agents.pyi": "class Agent:\n    def __init__(self) -> None: ...\n    async def respond(self, prompt: str) -> str: ...\n",
+            "mine.py": "def greet(name: str) -> str:\n    return name\n",
+        ] })
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        let found = await pyright.reference(in: source, line: lines.count, character: lines.last!.utf16.count)
+        #expect(found == path)
+    }
+
+    @Test func referencesNothingForANameTheDocumentDeclares() async {
+        let found = await Self.pyright.reference(in: "def mine(): ...\nmine", line: 2, character: 4)
+        #expect(found == nil)
     }
 
     @Test func readsTheFilesItIsGiven() async {

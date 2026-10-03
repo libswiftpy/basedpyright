@@ -46,6 +46,7 @@ window.start = async (files, config) => {
     processId: 1, rootUri: "file:///src/", rootPath: "/src/",
     capabilities: { textDocument: {
       publishDiagnostics: { versionSupport: true }, completion: {},
+      definition: {}, documentSymbol: { hierarchicalDocumentSymbolSupport: true },
       signatureHelp: { signatureInformation: {
         documentationFormat: ["plaintext"],
         parameterInformation: { labelOffsetSupport: true }, activeParameterSupport: true,
@@ -89,5 +90,20 @@ window.signatureHelp = async (uri, text, line, character) => {
   const version = update(uri, text);
   const result = await request("textDocument/signatureHelp", { textDocument: { uri }, position: { line, character } });
   return versions[uri] === version ? result : null;
+};
+
+// Where the name at a position is declared: one location, or null.
+window.definition = async (uri, text, line, character) => {
+  update(uri, text);
+  const result = await request("textDocument/definition", { textDocument: { uri }, position: { line, character } });
+  const location = Array.isArray(result) ? result[0] : result;
+  if (!location) return null;
+  return { uri: location.uri ?? location.targetUri, range: location.range ?? location.targetSelectionRange };
+};
+
+// A file's declarations as a tree: name, kind, range, children.
+window.symbols = async (uri) => {
+  const result = await request("textDocument/documentSymbol", { textDocument: { uri } });
+  return result ?? [];
 };
 </script>
