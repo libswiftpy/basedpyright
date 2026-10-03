@@ -64,6 +64,8 @@ public final class Pyright {
             public let label: String
             public let activeParameter: NSRange?
             public let parameterDocumentation: String?
+            /// What follows ` -> ` at the label's end, if anything.
+            public let returnType: String?
         }
 
         /// Every overload, in pyright's order.
@@ -72,9 +74,6 @@ public final class Pyright {
         public let selected: Int
         /// Some signature, of all the overloads, has a parameter.
         public let takesArguments: Bool
-        /// Some signature is one that's called without arguments: every
-        /// parameter is optional, and it doesn't open with `*args` as `print` does.
-        public let canOmitArguments: Bool
 
         public var label: String { signatures[selected].label }
         public var activeParameter: NSRange? { signatures[selected].activeParameter }
@@ -88,10 +87,6 @@ public final class Pyright {
                 Self.parameters(of: signature).filter { $0 != "/" && $0 != "*" }
             }
             takesArguments = parameterLists.contains { !$0.isEmpty }
-            canOmitArguments = parameterLists.contains { parameters in
-                let variadic = parameters.first.map { $0.hasPrefix("*") && !$0.hasPrefix("**") } ?? false
-                return !variadic && parameters.allSatisfy { $0.contains("=") || $0.hasPrefix("*") }
-            }
             let decoded = signatures.enumerated().compactMap { index, signature in
                 Signature(signature, active: result["activeParameter"] as? Int).map { (index, $0) }
             }
@@ -327,6 +322,20 @@ extension Pyright.SignatureHelp.Signature {
         } else {
             activeParameter = nil
         }
+        returnType = Self.returnType(of: label, parameters: parameters)
+    }
+
+    /// Found past the last parameter's offsets, so a `)` in a default can't end the list.
+    private static func returnType(of label: String, parameters: [[String: Any]]) -> String? {
+        let utf16 = label.utf16
+        let lastEnd = parameters.compactMap { ($0["label"] as? [Int])?.last }.max() ?? 1
+        guard lastEnd <= utf16.count,
+              let close = utf16[utf16.index(utf16.startIndex, offsetBy: lastEnd)...].firstIndex(of: 0x29),
+              let after = utf16.index(close, offsetBy: 1, limitedBy: utf16.endIndex),
+              let rest = String(utf16[after...]),
+              rest.hasPrefix(" -> ")
+        else { return nil }
+        return String(rest.dropFirst(4))
     }
 }
 

@@ -97,20 +97,6 @@ struct PyrightTests {
         #expect(print.takesArguments)
     }
 
-    @Test(arguments: [
-        ("def opt(a: int = 1, *rest: int, **named: int): ...\nopt()", true),
-        ("def req(a: int, b: int = 1): ...\nreq()", false),
-        ("print()", false),
-        ("list()", true),
-    ])
-    func tellsWhetherACallIsMadeWithoutArguments(source: String, canOmit: Bool) async throws {
-        let lastLine = source.split(separator: "\n").count
-        let character = (source.split(separator: "\n").last?.utf16.count ?? 1) - 1
-        let result = try #require(await Self.pyright.signatureHelp(in: source, line: lastLine, character: character))
-        #expect(result.takesArguments)
-        #expect(result.canOmitArguments == canOmit, "\(result.label)")
-    }
-
     @Test func keepsEveryOverloadWithTheMatchedOneSelected() async throws {
         let source = """
         from typing import overload
@@ -138,6 +124,21 @@ struct PyrightTests {
         ]))
         #expect(result.label == "(a: str = '👍', b: int)")
         #expect(result.activeParameter == NSRange(location: 16, length: 6))
+    }
+
+    @Test func separatesTheReturnTypeFromTheParameters() async throws {
+        let decoded = try #require(Pyright.SignatureHelp([
+            "signatures": [
+                ["label": "(end: str = ') -> x') -> list[int]", "parameters": [["label": [1, 20]]]],
+                ["label": "() -> None", "parameters": []],
+                ["label": "(a)", "parameters": [["label": [1, 2]]]],
+            ],
+        ]))
+        #expect(decoded.signatures.map(\.returnType) == ["list[int]", "None", nil])
+
+        let source = "def greet(sep: str = ')') -> dict[str, int]: ...\ngreet()"
+        let live = try #require(await Self.pyright.signatureHelp(in: source, line: 2, character: 6))
+        #expect(live.signatures.first?.returnType == "dict[str, int]", "\(live.label)")
     }
 
     @Test(arguments: [-1, 2, 99])
