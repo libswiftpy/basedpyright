@@ -111,6 +111,22 @@ struct PyrightTests {
         #expect(result.canOmitArguments == canOmit, "\(result.label)")
     }
 
+    @Test func keepsEveryOverloadWithTheMatchedOneSelected() async throws {
+        let source = """
+        from typing import overload
+        @overload
+        def f(a: int) -> int: ...
+        @overload
+        def f(a: str, b: str) -> str: ...
+        def f(a, b=None): return a
+        f('x', )
+        """
+        let result = try #require(await Self.pyright.signatureHelp(in: source, line: 7, character: 7))
+        #expect(result.signatures.count == 2)
+        #expect(result.label.contains("b: str"), "\(result.signatures.map(\.label))")
+        #expect(result.signatures[result.selected] == result.signatures.first { $0.label.contains("b: str") })
+    }
+
     @Test func decodesSelectedSignatureAndParameterOverride() throws {
         let result = try #require(Pyright.SignatureHelp([
             "signatures": [
@@ -160,6 +176,13 @@ struct PyrightTests {
         #expect(items.first?.rule != nil)
     }
 
+    @Test func marksAnUnusedImportUnnecessary() async {
+        let items = await Self.pyright.diagnostics(for: "import json\nx = 1")
+        #expect(items.contains { $0.line == 1 && $0.isUnnecessary && $0.severity == .hint }, "\(items)")
+        let used = await Self.pyright.diagnostics(for: "import json\nx = json.dumps(1)")
+        #expect(!used.contains { $0.isUnnecessary })
+    }
+
     @Test func reportsWhatDoesntParseWithoutARule() async {
         let items = await Self.pyright.diagnostics(for: "def f(:\n    pass")
         #expect(items.contains { $0.severity == .error && $0.rule == nil })
@@ -189,6 +212,13 @@ struct PyrightTests {
         #expect(modules.contains { $0.label == "json" && $0.kind == .module })
         let keywords = await Self.pyright.completions(in: "impo", line: 1, character: 4)
         #expect(keywords.contains { $0.label == "import" && $0.kind == .keyword })
+    }
+
+    @Test func completesOnlyWhatsInScope() async {
+        let unimported = await Self.pyright.completions(in: "OrderedDi", line: 1, character: 9)
+        #expect(!unimported.contains { $0.label == "OrderedDict" }, "\(unimported.map(\.label))")
+        let imported = await Self.pyright.completions(in: "from collections import OrderedDict\nOrderedDi", line: 2, character: 9)
+        #expect(imported.contains { $0.label == "OrderedDict" })
     }
 
     @Test(arguments: [

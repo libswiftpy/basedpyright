@@ -55,7 +55,11 @@ window.start = async (files, config) => {
     initializationOptions: { files },
   });
   notify("initialized", {});
-  notify("workspace/didChangeConfiguration", { settings: {} });
+  // No auto-import completions: nothing applies the import they need. A
+  // section given resets autoSearchPaths, so it's kept on.
+  notify("workspace/didChangeConfiguration", {
+    settings: { basedpyright: { analysis: { autoImportCompletions: false, autoSearchPaths: true } } },
+  });
 };
 
 // Replaces a document's text, opening it the first time.

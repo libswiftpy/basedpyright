@@ -25,6 +25,8 @@ public final class Pyright {
         public let message: String
         /// The rule that reported it; none for what didn't parse.
         public let rule: String?
+        /// Unused or unreachable code, which editors fade.
+        public let isUnnecessary: Bool
     }
 
     public struct Completion: Sendable, Hashable {
@@ -58,14 +60,25 @@ public final class Pyright {
     }
 
     public struct SignatureHelp: Sendable, Equatable {
-        public let label: String
-        public let activeParameter: NSRange?
-        public let parameterDocumentation: String?
+        public struct Signature: Sendable, Equatable {
+            public let label: String
+            public let activeParameter: NSRange?
+            public let parameterDocumentation: String?
+        }
+
+        /// Every overload, in pyright's order.
+        public let signatures: [Signature]
+        /// The overload pyright matched the call to.
+        public let selected: Int
         /// Some signature, of all the overloads, has a parameter.
         public let takesArguments: Bool
         /// Some signature is one that's called without arguments: every
         /// parameter is optional, and it doesn't open with `*args` as `print` does.
         public let canOmitArguments: Bool
+
+        public var label: String { signatures[selected].label }
+        public var activeParameter: NSRange? { signatures[selected].activeParameter }
+        public var parameterDocumentation: String? { signatures[selected].parameterDocumentation }
 
         init?(_ result: [String: Any]) {
             guard let signatures = result["signatures"] as? [[String: Any]],
@@ -79,36 +92,13 @@ public final class Pyright {
                 let variadic = parameters.first.map { $0.hasPrefix("*") && !$0.hasPrefix("**") } ?? false
                 return !variadic && parameters.allSatisfy { $0.contains("=") || $0.hasPrefix("*") }
             }
-            let selected = result["activeSignature"] as? Int ?? 0
-            let signature = signatures[signatures.indices.contains(selected) ? selected : 0]
-            guard let label = signature["label"] as? String else { return nil }
-            self.label = label
-            let parameters = signature["parameters"] as? [[String: Any]] ?? []
-            let active = signature["activeParameter"] as? Int ?? result["activeParameter"] as? Int
-            if let active, parameters.indices.contains(active) {
-                let documentation = parameters[active]["documentation"]
-                let text = (documentation as? String
-                    ?? (documentation as? [String: Any])?["value"] as? String)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                parameterDocumentation = text.flatMap { $0.isEmpty ? nil : $0 }
-            } else {
-                parameterDocumentation = nil
+            let decoded = signatures.enumerated().compactMap { index, signature in
+                Signature(signature, active: result["activeParameter"] as? Int).map { (index, $0) }
             }
-            if let active, parameters.indices.contains(active),
-               let offsets = parameters[active]["label"] as? [Int],
-               offsets.count == 2, offsets[0] >= 0, offsets[1] > offsets[0],
-               offsets[1] <= label.utf16.count {
-                let range = NSRange(location: offsets[0], length: offsets[1] - offsets[0])
-                if let bounds = Range(range, in: label),
-                   label.indices.contains(bounds.lowerBound),
-                   bounds.upperBound == label.endIndex || label.indices.contains(bounds.upperBound) {
-                    activeParameter = range
-                } else {
-                    activeParameter = nil
-                }
-            } else {
-                activeParameter = nil
-            }
+            guard !decoded.isEmpty else { return nil }
+            self.signatures = decoded.map(\.1)
+            let requested = result["activeSignature"] as? Int ?? 0
+            selected = decoded.firstIndex { $0.0 == requested } ?? 0
         }
 
         /// The text of each parameter, from its label or its offsets in the signature's.
@@ -306,6 +296,40 @@ public final class Pyright {
     }
 }
 
+extension Pyright.SignatureHelp.Signature {
+    /// An overload, its active parameter its own or else the call's `active`.
+    init?(_ signature: [String: Any], active: Int?) {
+        guard let label = signature["label"] as? String else { return nil }
+        self.label = label
+        let parameters = signature["parameters"] as? [[String: Any]] ?? []
+        let active = signature["activeParameter"] as? Int ?? active
+        if let active, parameters.indices.contains(active) {
+            let documentation = parameters[active]["documentation"]
+            let text = (documentation as? String
+                ?? (documentation as? [String: Any])?["value"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            parameterDocumentation = text.flatMap { $0.isEmpty ? nil : $0 }
+        } else {
+            parameterDocumentation = nil
+        }
+        if let active, parameters.indices.contains(active),
+           let offsets = parameters[active]["label"] as? [Int],
+           offsets.count == 2, offsets[0] >= 0, offsets[1] > offsets[0],
+           offsets[1] <= label.utf16.count {
+            let range = NSRange(location: offsets[0], length: offsets[1] - offsets[0])
+            if let bounds = Range(range, in: label),
+               label.indices.contains(bounds.lowerBound),
+               bounds.upperBound == label.endIndex || label.indices.contains(bounds.upperBound) {
+                activeParameter = range
+            } else {
+                activeParameter = nil
+            }
+        } else {
+            activeParameter = nil
+        }
+    }
+}
+
 extension Pyright.Diagnostic {
     init?(_ item: [String: Any]) {
         guard let range = item["range"] as? [String: Any],
@@ -321,7 +345,9 @@ extension Pyright.Diagnostic {
             endColumn: (end["character"] ?? 0) + 1,
             severity: Severity(rawValue: item["severity"] as? Int ?? 1) ?? .error,
             message: message,
-            rule: item["code"] as? String
+            rule: item["code"] as? String,
+            // The LSP's `DiagnosticTag.Unnecessary`.
+            isUnnecessary: (item["tags"] as? [Int])?.contains(1) == true
         )
     }
 }
