@@ -33,6 +33,47 @@ public final class Pyright {
         public let isCallable: Bool
     }
 
+    public struct SignatureHelp: Sendable, Equatable {
+        public let label: String
+        public let activeParameter: NSRange?
+        public let parameterDocumentation: String?
+
+        init?(_ result: [String: Any]) {
+            guard let signatures = result["signatures"] as? [[String: Any]],
+                  !signatures.isEmpty else { return nil }
+            let selected = result["activeSignature"] as? Int ?? 0
+            let signature = signatures[signatures.indices.contains(selected) ? selected : 0]
+            guard let label = signature["label"] as? String else { return nil }
+            self.label = label
+            let parameters = signature["parameters"] as? [[String: Any]] ?? []
+            let active = signature["activeParameter"] as? Int ?? result["activeParameter"] as? Int
+            if let active, parameters.indices.contains(active) {
+                let documentation = parameters[active]["documentation"]
+                let text = (documentation as? String
+                    ?? (documentation as? [String: Any])?["value"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                parameterDocumentation = text.flatMap { $0.isEmpty ? nil : $0 }
+            } else {
+                parameterDocumentation = nil
+            }
+            if let active, parameters.indices.contains(active),
+               let offsets = parameters[active]["label"] as? [Int],
+               offsets.count == 2, offsets[0] >= 0, offsets[1] > offsets[0],
+               offsets[1] <= label.utf16.count {
+                let range = NSRange(location: offsets[0], length: offsets[1] - offsets[0])
+                if let bounds = Range(range, in: label),
+                   label.indices.contains(bounds.lowerBound),
+                   bounds.upperBound == label.endIndex || label.indices.contains(bounds.upperBound) {
+                    activeParameter = range
+                } else {
+                    activeParameter = nil
+                }
+            } else {
+                activeParameter = nil
+            }
+        }
+    }
+
     private let log = Logger(subsystem: "Pyright", category: "Pyright")
     private let configuration: String
     private let files: @MainActor () -> [String: String]
@@ -80,6 +121,16 @@ public final class Pyright {
                 let callable: Set<Int> = [2, 3, 4, 7]
                 return Completion(label: label, isCallable: callable.contains(item["kind"] as? Int ?? 0))
             }
+    }
+
+    /// Signature at a 1-based line and UTF-16 character offset.
+    public func signatureHelp(
+        in text: String, line: Int, character: Int, document: String = "main.py"
+    ) async -> SignatureHelp? {
+        guard let result = await call("return await signatureHelp(uri, text, line, character)", [
+            "uri": Self.uri(document), "text": text, "line": line - 1, "character": character,
+        ]) as? [String: Any] else { return nil }
+        return SignatureHelp(result)
     }
 
     /// Starts over on the next call, which asks for the files again.
