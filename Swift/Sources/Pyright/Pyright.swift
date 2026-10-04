@@ -149,7 +149,11 @@ public final class Pyright {
         let items = await call("return await complete(uri, text, line, character)", [
             "uri": Self.uri(document), "text": text, "line": line - 1, "character": character,
         ]) as? [[String: Any]] ?? []
-        return items
+        return Self.completions(items)
+    }
+
+    private static func completions(_ items: [[String: Any]]) -> [Completion] {
+        items
             .sorted { ($0["sortText"] as? String ?? "") < ($1["sortText"] as? String ?? "") }
             .compactMap { item in
                 guard let label = item["label"] as? String else { return nil }
@@ -171,10 +175,64 @@ public final class Pyright {
     /// `character` is declared as, such as `agents.Agent.respond`; nil for a
     /// name the document declares itself, or none found.
     public func reference(in text: String, line: Int, character: Int, document: String = "main.py") async -> String? {
-        guard let location = await call("return await definition(uri, text, line, character)", [
-                  "uri": Self.uri(document), "text": text, "line": line - 1, "character": character,
-              ]) as? [String: Any],
-              let uri = location["uri"] as? String, uri != Self.uri(document),
+        let location = await call("return await definition(uri, text, line, character)", [
+            "uri": Self.uri(document), "text": text, "line": line - 1, "character": character,
+        ]) as? [String: Any]
+        return await reference(to: location, from: text, line: line, character: character) { $0 == Self.uri(document) }
+    }
+
+    // MARK: Cells
+
+    /// Each cell's diagnostics, the cells read as a notebook's are: each parsed
+    /// alone, knowing the names of the cells above. Empty where pyright can't
+    /// start or newer cells replaced these first.
+    public func diagnostics(forCells cells: [String], notebook: String = "notebook.ipynb") async -> [[Diagnostic]] {
+        let items = await call("return await checkCells(uri, cells)", [
+            "uri": Self.uri(notebook), "cells": cells,
+        ]) as? [[[String: Any]]]
+        return items?.map { $0.compactMap(Diagnostic.init) } ?? Array(repeating: [], count: cells.count)
+    }
+
+    /// Completions in `cells[cell]`, at a 1-based `line` and a UTF-16 `character` offset in it.
+    public func completions(
+        inCells cells: [String], cell: Int, line: Int, character: Int, notebook: String = "notebook.ipynb"
+    ) async -> [Completion] {
+        let items = await call("return await completeInCell(uri, cells, cell, line, character)", [
+            "uri": Self.uri(notebook), "cells": cells, "cell": cell, "line": line - 1, "character": character,
+        ]) as? [[String: Any]] ?? []
+        return Self.completions(items)
+    }
+
+    /// Signature in `cells[cell]`, at a 1-based line and UTF-16 character offset.
+    public func signatureHelp(
+        inCells cells: [String], cell: Int, line: Int, character: Int, notebook: String = "notebook.ipynb"
+    ) async -> SignatureHelp? {
+        guard let result = await call("return await signatureHelpInCell(uri, cells, cell, line, character)", [
+            "uri": Self.uri(notebook), "cells": cells, "cell": cell, "line": line - 1, "character": character,
+        ]) as? [String: Any] else { return nil }
+        return SignatureHelp(result)
+    }
+
+    /// As ``reference(in:line:character:document:)``, for a name in `cells[cell]`;
+    /// nil for one any of the cells declares.
+    public func reference(
+        inCells cells: [String], cell: Int, line: Int, character: Int, notebook: String = "notebook.ipynb"
+    ) async -> String? {
+        guard cells.indices.contains(cell) else { return nil }
+        let location = await call("return await definitionInCell(uri, cells, cell, line, character)", [
+            "uri": Self.uri(notebook), "cells": cells, "cell": cell, "line": line - 1, "character": character,
+        ]) as? [String: Any]
+        return await reference(to: location, from: cells[cell], line: line, character: character) {
+            $0.hasPrefix("vscode-notebook-cell:")
+        }
+    }
+
+    private func reference(
+        to location: [String: Any]?, from text: String, line: Int, character: Int,
+        isOwn: (String) -> Bool
+    ) async -> String? {
+        guard let location,
+              let uri = location["uri"] as? String, !isOwn(uri),
               let start = (location["range"] as? [String: Any])?["start"] as? [String: Int],
               let module = Self.module(uri)
         else { return nil }

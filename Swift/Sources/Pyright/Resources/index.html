@@ -71,6 +71,95 @@ function update(uri, text) {
   return version;
 }
 
+// Notebooks, read as a Jupyter notebook is: each cell parsed alone, its names
+// reaching the cells below. One version counter for all, so a reopened cell's
+// version still grows.
+const notebooks = {};
+let cellVersion = 0;
+const cellUri = (uri, index) => uri.replace(/^file:/, "vscode-notebook-cell:") + "#W" + index;
+
+// Opens the cells under `uri`, closing what was open there first.
+function openCells(uri, cells) {
+  const open = notebooks[uri];
+  if (open) {
+    notify("notebookDocument/didClose", {
+      notebookDocument: { uri },
+      cellTextDocuments: open.cells.map((_, index) => ({ uri: cellUri(uri, index) })),
+    });
+  }
+  const version = ++cellVersion;
+  notebooks[uri] = { cells: [...cells], version };
+  notify("notebookDocument/didOpen", {
+    notebookDocument: {
+      uri, notebookType: "jupyter-notebook", version,
+      cells: cells.map((_, index) => ({ kind: 2, document: cellUri(uri, index) })),
+    },
+    cellTextDocuments: cells.map((text, index) => ({ uri: cellUri(uri, index), languageId: "python", version, text })),
+  });
+  return version;
+}
+
+// Brings the open cells up to `cells`: only the edited ones change, unless
+// cells were added or removed.
+function syncCells(uri, cells) {
+  const open = notebooks[uri];
+  if (!open || open.cells.length !== cells.length) return openCells(uri, cells);
+  const edited = cells.flatMap((text, index) => (text === open.cells[index] ? [] : [index]));
+  if (edited.length === 0) return open.version;
+  const version = ++cellVersion;
+  open.cells = [...cells];
+  open.version = version;
+  notify("notebookDocument/didChange", {
+    notebookDocument: { uri, version },
+    change: { cells: { textContent: edited.map((index) => ({
+      document: { uri: cellUri(uri, index), version },
+      changes: [{ text: cells[index] }],
+    })) } },
+  });
+  return version;
+}
+
+// Each cell's diagnostics, or null once later cells replaced them. Reopened,
+// so every cell reports again: what's unused depends on the cells below.
+window.checkCells = (uri, cells) => {
+  const version = openCells(uri, cells);
+  const uris = cells.map((_, index) => cellUri(uri, index));
+  if (uris.length === 0) return Promise.resolve([]);
+  const found = new Map();
+  return new Promise((resolve) => {
+    const finish = (result) => {
+      diagnosticListeners = diagnosticListeners.filter((other) => other !== listener);
+      resolve(result);
+    };
+    const listener = (params) => {
+      if (!uris.includes(params.uri) || params.version === undefined || params.version < version) return;
+      if (params.version > version) return finish(null);
+      found.set(params.uri, params.diagnostics);
+      if (found.size === uris.length) finish(uris.map((cell) => found.get(cell)));
+    };
+    diagnosticListeners.push(listener);
+  });
+};
+
+window.completeInCell = async (uri, cells, cell, line, character) => {
+  syncCells(uri, cells);
+  const result = await request("textDocument/completion", { textDocument: { uri: cellUri(uri, cell) }, position: { line, character } });
+  const items = Array.isArray(result) ? result : (result?.items ?? []);
+  return items.map((item) => ({ label: item.label, kind: item.kind ?? 0, sortText: item.sortText ?? item.label }));
+};
+window.signatureHelpInCell = async (uri, cells, cell, line, character) => {
+  const version = syncCells(uri, cells);
+  const result = await request("textDocument/signatureHelp", { textDocument: { uri: cellUri(uri, cell) }, position: { line, character } });
+  return notebooks[uri].version === version ? result : null;
+};
+window.definitionInCell = async (uri, cells, cell, line, character) => {
+  syncCells(uri, cells);
+  const result = await request("textDocument/definition", { textDocument: { uri: cellUri(uri, cell) }, position: { line, character } });
+  const location = Array.isArray(result) ? result[0] : result;
+  if (!location) return null;
+  return { uri: location.uri ?? location.targetUri, range: location.range ?? location.targetSelectionRange };
+};
+
 // The document's diagnostics, or null once a later text replaced it.
 window.check = (uri, text) => {
   const version = update(uri, text);

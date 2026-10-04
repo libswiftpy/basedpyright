@@ -245,6 +245,49 @@ struct PyrightTests {
         #expect(found == nil)
     }
 
+    // MARK: Cells
+
+    @Test func keepsWhatDoesntParseInItsCell() async {
+        let cells = await Self.pyright.diagnostics(forCells: ["print('a'", "2 + 2", "name: str = 42"])
+        #expect(cells.count == 3)
+        #expect(cells[0].contains { $0.severity == .error && $0.rule == nil }, "\(cells[0])")
+        #expect(cells[1].isEmpty, "\(cells[1])")
+        #expect(cells[2].map(\.line) == [1], "\(cells[2])")
+    }
+
+    @Test func passesNamesDownTheCells() async {
+        let cells = await Self.pyright.diagnostics(forCells: ["x = 1\nprint(", "x + y"])
+        #expect(cells[1].map(\.message).contains { $0.contains("\"y\"") }, "\(cells[1])")
+        #expect(!cells[1].map(\.message).contains { $0.contains("\"x\"") }, "\(cells[1])")
+    }
+
+    @Test func countsANameUsedBelowAsUsed() async {
+        let used = await Self.pyright.diagnostics(forCells: ["import json", "json.dumps(1)"])
+        #expect(!used[0].contains { $0.isUnnecessary }, "\(used[0])")
+        let unused = await Self.pyright.diagnostics(forCells: ["import json", "x = 1"])
+        #expect(unused[0].contains { $0.isUnnecessary }, "\(unused[0])")
+    }
+
+    @Test func readsCellsAsANotebookRunsThem() async {
+        // Top-level await, and a last expression that is the cell's value.
+        let cells = await Self.pyright.diagnostics(forCells: ["import asyncio\nawait asyncio.sleep(0)\n2 + 2"])
+        #expect(cells[0].filter { $0.severity == .error || $0.severity == .warning }.isEmpty, "\(cells[0])")
+    }
+
+    @Test func completesAndHelpsInACell() async throws {
+        let cells = ["def greet(name: str) -> str: ...\nprint(", "gre"]
+        let names = await Self.pyright.completions(inCells: cells, cell: 1, line: 1, character: 3)
+        #expect(names.contains { $0.label == "greet" }, "\(names.map(\.label))")
+
+        let call = ["def greet(name: str) -> str: ...", "greet()"]
+        let help = try #require(await Self.pyright.signatureHelp(inCells: call, cell: 1, line: 1, character: 6))
+        #expect(help.label.contains("name: str"))
+
+        let json = ["import json", "json.loads"]
+        #expect(await Self.pyright.reference(inCells: json, cell: 1, line: 1, character: 10) == "json.loads")
+        #expect(await Self.pyright.reference(inCells: call, cell: 1, line: 1, character: 5) == nil)
+    }
+
     @Test func readsTheFilesItIsGiven() async {
         let items = await Self.pyright.completions(in: "import greeting\ngreeting.he", line: 2, character: 11)
         #expect(items.contains { $0.label == "hello" })
