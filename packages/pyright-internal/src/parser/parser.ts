@@ -1890,10 +1890,15 @@ export class Parser {
             return undefined;
         }
 
-        if (target.nodeType === ParseNodeType.Unpack) {
-            this._addSyntaxError(LocMessage.unpackIllegalInComprehension(), target);
-        } else if (target.nodeType === ParseNodeType.DictionaryExpandEntry) {
-            this._addSyntaxError(LocMessage.dictExpandIllegalInComprehension(), target);
+        // TODO(tech-debt): pep798-comprehension-unpack
+        // Allowed from 3.15 (PEP 798). Upstream rejects it at every version; drop
+        // this `if` (keeping its body) once it supports it.
+        if (PythonVersion.isLessThan(this._getLanguageVersion(), pythonVersion3_15)) {
+            if (target.nodeType === ParseNodeType.Unpack) {
+                this._addSyntaxError(LocMessage.unpackIllegalInComprehension(), target);
+            } else if (target.nodeType === ParseNodeType.DictionaryExpandEntry) {
+                this._addSyntaxError(LocMessage.dictExpandIllegalInComprehension(), target);
+            }
         }
 
         const compNode = ComprehensionNode.create(this._getOwnerKey(), target, isGenerator);
