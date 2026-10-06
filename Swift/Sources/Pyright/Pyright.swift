@@ -127,7 +127,7 @@ public final class Pyright {
     ) {
         // The bundled stubs: without them nothing, `str` included, is known.
         var configuration = configuration
-        configuration["typeshedPath"] = configuration["typeshedPath"] ?? "/typeshed"
+        configuration["typeshedPath"] = configuration["typeshedPath"] ?? "/typeshed-fallback"
         let data = try? JSONSerialization.data(withJSONObject: configuration)
         self.configuration = data.map { String(decoding: $0, as: UTF8.self) } ?? "{}"
         self.files = files
@@ -249,7 +249,7 @@ public final class Pyright {
     /// The module a declaring file is, from its path among the files pyright reads.
     static func module(_ uri: String) -> String? {
         guard var path = URL(string: uri)?.path(percentEncoded: false) else { return nil }
-        for root in ["/src/typings/", "/src/site-packages/", "/typeshed/stdlib/", "/src/"] where path.hasPrefix(root) {
+        for root in ["/src/typings/", "/src/site-packages/", "/typeshed-fallback/stdlib/", "/src/"] where path.hasPrefix(root) {
             path.removeFirst(root.count)
             break
         }
