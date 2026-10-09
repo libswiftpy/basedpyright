@@ -1,5 +1,12 @@
 [
   {
+    "version": "pyprompt-2.1.1",
+    "title": "pyprompt-2.1.1",
+    "aliases": [
+      "latest"
+    ]
+  },
+  {
     "version": "dev",
     "title": "dev",
     "aliases": []
@@ -7,9 +14,7 @@
   {
     "version": "v1.40.1",
     "title": "v1.40.1",
-    "aliases": [
-      "latest"
-    ]
+    "aliases": []
   },
   {
     "version": "v1.40.0",
