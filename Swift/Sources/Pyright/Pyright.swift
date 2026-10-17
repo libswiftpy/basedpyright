@@ -7,8 +7,8 @@ import Foundation
 import OSLog
 import WebKit
 
-/// basedpyright, run by WebKit in a web view that's never shown: WebKit's
-/// process can compile JavaScript, an app's own can't. It starts on first use.
+/// basedpyright, run by WebKit in a page that's never shown: WebKit's process
+/// can compile JavaScript, an app's own can't. It starts on first use.
 @MainActor
 public final class Pyright {
     public struct Diagnostic: Sendable, Hashable {
@@ -113,7 +113,7 @@ public final class Pyright {
     private let log = Logger(subsystem: "Pyright", category: "Pyright")
     private let configuration: String
     private let files: @MainActor () -> [String: String]
-    private var webView: WKWebView?
+    private var page: WebPage?
     private var started: Task<Void, Error>?
 
     /// - Parameters:
@@ -303,7 +303,7 @@ public final class Pyright {
 
     /// Starts over on the next call, which asks for the files again.
     public func reload() {
-        webView = nil
+        page = nil
         started = nil
     }
 
@@ -314,7 +314,7 @@ public final class Pyright {
     private func call(_ script: String, _ arguments: [String: Any]) async -> Any? {
         do {
             try await start().value
-            return try await webView?.callAsyncJavaScript(script, arguments: arguments, contentWorld: .page)
+            return try await page?.callJavaScript(script, arguments: arguments, contentWorld: .page)
         } catch {
             log.error("\(error)")
             return nil
@@ -324,21 +324,21 @@ public final class Pyright {
     private func start() -> Task<Void, Error> {
         if let started { return started }
 
-        let configuration = WKWebViewConfiguration()
-        configuration.setURLSchemeHandler(ResourceHandler(), forURLScheme: "pyright")
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        var configuration = WebPage.Configuration()
+        configuration.urlSchemeHandlers[URLScheme("pyright")!] = ResourceHandler()
+        let page = WebPage(configuration: configuration)
         #if DEBUG
-        webView.isInspectable = true
+        page.isInspectable = true
         #endif
-        self.webView = webView
-        webView.load(URLRequest(url: URL(string: "pyright://app/index.html")!))
+        self.page = page
 
         let task = Task {
-            while try await webView.evaluateJavaScript("typeof start") as? String != "function" {
-                try await Task.sleep(for: .milliseconds(20))
+            // The page's script has run once it finishes loading.
+            for try await event in page.load(URLRequest(url: URL(string: "pyright://app/index.html")!)) {
+                if event == .finished { break }
             }
             let files = Dictionary(uniqueKeysWithValues: self.files().map { ("/src/" + $0.key, $0.value) })
-            _ = try await webView.callAsyncJavaScript(
+            _ = try await page.callJavaScript(
                 "await start(files, config)",
                 arguments: ["files": files, "config": self.configuration],
                 contentWorld: .page
@@ -420,20 +420,20 @@ extension Pyright.Diagnostic {
 }
 
 /// Serves the page and the worker from the bundle, so pyright starts offline.
-private final class ResourceHandler: NSObject, WKURLSchemeHandler {
-    func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
-        guard let url = task.request.url,
-              let file = Bundle.module.url(forResource: url.lastPathComponent, withExtension: nil),
-              let data = try? Data(contentsOf: file)
-        else {
-            task.didFailWithError(URLError(.fileDoesNotExist))
-            return
+private struct ResourceHandler: URLSchemeHandler {
+    func reply(for request: URLRequest) -> AsyncThrowingStream<URLSchemeTaskResult, any Error> {
+        AsyncThrowingStream { continuation in
+            guard let url = request.url,
+                  let file = Bundle.module.url(forResource: url.lastPathComponent, withExtension: nil),
+                  let data = try? Data(contentsOf: file)
+            else {
+                continuation.finish(throwing: URLError(.fileDoesNotExist))
+                return
+            }
+            let type = url.pathExtension == "html" ? "text/html" : "text/javascript"
+            continuation.yield(.response(URLResponse(url: url, mimeType: type, expectedContentLength: data.count, textEncodingName: "utf-8")))
+            continuation.yield(.data(data))
+            continuation.finish()
         }
-        let type = url.pathExtension == "html" ? "text/html" : "text/javascript"
-        task.didReceive(URLResponse(url: url, mimeType: type, expectedContentLength: data.count, textEncodingName: "utf-8"))
-        task.didReceive(data)
-        task.didFinish()
     }
-
-    func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
 }
