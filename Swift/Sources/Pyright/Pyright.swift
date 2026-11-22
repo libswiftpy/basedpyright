@@ -52,6 +52,20 @@ public final class Pyright {
 
         public let label: String
         public let kind: Kind
+        /// Which response it came in, for ``Pyright/details(of:)``.
+        let generation: Int?
+        let index: Int?
+
+        public init(label: String, kind: Kind) {
+            self.init(label: label, kind: kind, generation: nil, index: nil)
+        }
+
+        init(label: String, kind: Kind, generation: Int?, index: Int?) {
+            self.label = label
+            self.kind = kind
+            self.generation = generation
+            self.index = index
+        }
 
         /// A function, method or class: what's completed with a call.
         public var isCallable: Bool {
@@ -157,8 +171,31 @@ public final class Pyright {
             .sorted { ($0["sortText"] as? String ?? "") < ($1["sortText"] as? String ?? "") }
             .compactMap { item in
                 guard let label = item["label"] as? String else { return nil }
-                return Completion(label: label, kind: Completion.Kind(item["kind"] as? Int ?? 0))
+                return Completion(
+                    label: label, kind: Completion.Kind(item["kind"] as? Int ?? 0),
+                    generation: item["generation"] as? Int, index: item["index"] as? Int
+                )
             }
+    }
+
+    /// What pyright resolves a completion to: its declaration, often in a
+    /// Markdown code block, and its documentation.
+    public struct CompletionDetails: Sendable, Equatable {
+        public let detail: String?
+        public let documentation: String?
+    }
+
+    /// A completion of the latest response's details; nil once a newer one came.
+    public func details(of completion: Completion) async -> CompletionDetails? {
+        guard let generation = completion.generation, let index = completion.index,
+              let result = await call("return await resolveCompletion(generation, index)", [
+                  "generation": generation, "index": index,
+              ]) as? [String: Any]
+        else { return nil }
+        let details = CompletionDetails(
+            detail: result["detail"] as? String, documentation: result["documentation"] as? String
+        )
+        return details.detail == nil && details.documentation == nil ? nil : details
     }
 
     /// Signature at a 1-based line and UTF-16 character offset.

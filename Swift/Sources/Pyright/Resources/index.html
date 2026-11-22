@@ -45,7 +45,9 @@ window.start = async (files, config) => {
   await request("initialize", {
     processId: 1, rootUri: "file:///src/", rootPath: "/src/",
     capabilities: { textDocument: {
-      publishDiagnostics: { versionSupport: true }, completion: {},
+      publishDiagnostics: { versionSupport: true },
+      // Markdown: a resolved item's declaration comes in a code block of its own.
+      completion: { completionItem: { documentationFormat: ["markdown", "plaintext"] } },
       definition: {}, documentSymbol: { hierarchicalDocumentSymbolSupport: true },
       signatureHelp: { signatureInformation: {
         documentationFormat: ["plaintext"],
@@ -141,11 +143,27 @@ window.checkCells = (uri, cells) => {
   });
 };
 
+// The last completion's items, kept whole: completionItem/resolve takes one back.
+let completionItems = [];
+let completionGeneration = 0;
+function keepCompletions(result) {
+  completionItems = Array.isArray(result) ? result : (result?.items ?? []);
+  const generation = ++completionGeneration;
+  return completionItems.map((item, index) => ({
+    label: item.label, kind: item.kind ?? 0, sortText: item.sortText ?? item.label, generation, index,
+  }));
+}
+// A completion's signature and documentation; null once newer completions replaced it.
+window.resolveCompletion = async (generation, index) => {
+  if (generation !== completionGeneration || !completionItems[index]) return null;
+  const item = await request("completionItem/resolve", completionItems[index]);
+  const documentation = typeof item?.documentation === "string" ? item.documentation : item?.documentation?.value;
+  return { detail: item?.detail ?? null, documentation: documentation ?? null };
+};
 window.completeInCell = async (uri, cells, cell, line, character) => {
   syncCells(uri, cells);
   const result = await request("textDocument/completion", { textDocument: { uri: cellUri(uri, cell) }, position: { line, character } });
-  const items = Array.isArray(result) ? result : (result?.items ?? []);
-  return items.map((item) => ({ label: item.label, kind: item.kind ?? 0, sortText: item.sortText ?? item.label }));
+  return keepCompletions(result);
 };
 window.signatureHelpInCell = async (uri, cells, cell, line, character) => {
   const version = syncCells(uri, cells);
@@ -176,8 +194,7 @@ window.check = (uri, text) => {
 window.complete = async (uri, text, line, character) => {
   update(uri, text);
   const result = await request("textDocument/completion", { textDocument: { uri }, position: { line, character } });
-  const items = Array.isArray(result) ? result : (result?.items ?? []);
-  return items.map((item) => ({ label: item.label, kind: item.kind ?? 0, sortText: item.sortText ?? item.label }));
+  return keepCompletions(result);
 };
 window.signatureHelp = async (uri, text, line, character) => {
   const version = update(uri, text);
