@@ -457,20 +457,37 @@ extension Pyright.Diagnostic {
 }
 
 /// Serves the page and the worker from the bundle, so pyright starts offline.
-private struct ResourceHandler: URLSchemeHandler {
+struct ResourceHandler: URLSchemeHandler {
     func reply(for request: URLRequest) -> AsyncThrowingStream<URLSchemeTaskResult, any Error> {
         AsyncThrowingStream { continuation in
-            guard let url = request.url,
-                  let file = Bundle.module.url(forResource: url.lastPathComponent, withExtension: nil),
-                  let data = try? Data(contentsOf: file)
-            else {
-                continuation.finish(throwing: URLError(.fileDoesNotExist))
+            guard let url = request.url else {
+                continuation.finish(throwing: URLError(.badURL))
                 return
             }
-            let type = url.pathExtension == "html" ? "text/html" : "text/javascript"
-            continuation.yield(.response(URLResponse(url: url, mimeType: type, expectedContentLength: data.count, textEncodingName: "utf-8")))
-            continuation.yield(.data(data))
-            continuation.finish()
+            let task = Task.detached(priority: .userInitiated) {
+                do {
+                    let data = try Self.data(named: url.lastPathComponent)
+                    let type = url.pathExtension == "html" ? "text/html" : "text/javascript"
+                    continuation.yield(.response(URLResponse(url: url, mimeType: type, expectedContentLength: data.count, textEncodingName: "utf-8")))
+                    continuation.yield(.data(data))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// The worker is bundled packed, the rest as is.
+    nonisolated static func data(named name: String) throws -> Data {
+        let isWorker = name == "pyright.worker.js"
+        guard let file = Bundle.module.url(forResource: name, withExtension: isWorker ? "lzma" : nil) else {
+            throw URLError(.fileDoesNotExist)
+        }
+        let data = try Data(contentsOf: file)
+        guard isWorker else { return data }
+        try Task.checkCancellation()
+        return try (data as NSData).decompressed(using: .lzma) as Data
     }
 }

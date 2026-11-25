@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds the browser worker with only the standard library's stubs and stages
-# it into the Swift target. Needs Node; pnpm comes through npx, pinned.
+# Builds the browser worker with only the standard library's stubs and packs
+# it into the Swift target. Needs macOS and Node; pnpm comes through npx, pinned.
 set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,6 +14,6 @@ $pnpm install --frozen-lockfile --filter "browser-basedpyright..." --filter "pyr
 cd packages/browser-pyright
 TYPESHED_STDLIB_ONLY=1 $pnpm run build
 
-cp dist/pyright.worker.js "$resources/pyright.worker.js"
+compression_tool -encode -a lzma -i dist/pyright.worker.js -o "$resources/pyright.worker.js.lzma"
 cp "$root/LICENSE.txt" "$resources/LICENSE.txt"
-ls -lh "$resources/pyright.worker.js"
+ls -lh "$resources/pyright.worker.js.lzma"

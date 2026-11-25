@@ -15,6 +15,13 @@ struct PyrightTests {
         files: { ["typings/greeting.pyi": "def hello(name: str) -> str: ..."] }
     )
 
+    @Test func unpacksTheWorker() throws {
+        let packed = try #require(Bundle.module.url(forResource: "pyright.worker.js", withExtension: "lzma"))
+        let worker = try ResourceHandler.data(named: "pyright.worker.js")
+        #expect(try worker.count > Data(contentsOf: packed).count)
+        #expect(String(data: worker, encoding: .utf8)?.contains("browser/boot") == true)
+    }
+
     @Test(arguments: [
         ("greet(|)", "name: str"),
         ("greet('Ada', |)", "count: int"),

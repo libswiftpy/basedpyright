@@ -16,7 +16,7 @@ let package = Package(
             path: "Swift/Sources/Pyright",
             resources: [
                 .copy("Resources/index.html"),
-                .copy("Resources/pyright.worker.js"),
+                .copy("Resources/pyright.worker.js.lzma"),
                 .copy("Resources/LICENSE.txt"),
             ]
         ),
