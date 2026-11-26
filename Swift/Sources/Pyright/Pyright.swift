@@ -52,17 +52,20 @@ public final class Pyright {
 
         public let label: String
         public let kind: Kind
+        /// Not in scope: ``Pyright/details(of:)`` has the edits that import it.
+        public let needsImport: Bool
         /// Which response it came in, for ``Pyright/details(of:)``.
         let generation: Int?
         let index: Int?
 
-        public init(label: String, kind: Kind) {
-            self.init(label: label, kind: kind, generation: nil, index: nil)
+        public init(label: String, kind: Kind, needsImport: Bool = false) {
+            self.init(label: label, kind: kind, needsImport: needsImport, generation: nil, index: nil)
         }
 
-        init(label: String, kind: Kind, generation: Int?, index: Int?) {
+        init(label: String, kind: Kind, needsImport: Bool = false, generation: Int?, index: Int?) {
             self.label = label
             self.kind = kind
+            self.needsImport = needsImport
             self.generation = generation
             self.index = index
         }
@@ -173,6 +176,7 @@ public final class Pyright {
                 guard let label = item["label"] as? String else { return nil }
                 return Completion(
                     label: label, kind: Completion.Kind(item["kind"] as? Int ?? 0),
+                    needsImport: item["needsImport"] as? Bool ?? false,
                     generation: item["generation"] as? Int, index: item["index"] as? Int
                 )
             }
@@ -183,6 +187,18 @@ public final class Pyright {
     public struct CompletionDetails: Sendable, Equatable {
         public let detail: String?
         public let documentation: String?
+        /// What choosing it changes elsewhere, such as the import it needs.
+        public let edits: [Edit]
+    }
+
+    /// Text that replaces a span, in the document's 1-based lines and UTF-16
+    /// columns, the end exclusive.
+    public struct Edit: Sendable, Hashable {
+        public let line: Int
+        public let column: Int
+        public let endLine: Int
+        public let endColumn: Int
+        public let text: String
     }
 
     /// A completion of the latest response's details; nil once a newer one came.
@@ -193,9 +209,10 @@ public final class Pyright {
               ]) as? [String: Any]
         else { return nil }
         let details = CompletionDetails(
-            detail: result["detail"] as? String, documentation: result["documentation"] as? String
+            detail: result["detail"] as? String, documentation: result["documentation"] as? String,
+            edits: (result["edits"] as? [[String: Any]] ?? []).compactMap(Edit.init)
         )
-        return details.detail == nil && details.documentation == nil ? nil : details
+        return details.detail == nil && details.documentation == nil && details.edits.isEmpty ? nil : details
     }
 
     /// Signature at a 1-based line and UTF-16 character offset.
@@ -431,6 +448,22 @@ extension Pyright.SignatureHelp.Signature {
               rest.hasPrefix(" -> ")
         else { return nil }
         return String(rest.dropFirst(4))
+    }
+}
+
+extension Pyright.Edit {
+    /// From the language server protocol's `TextEdit`.
+    init?(_ item: [String: Any]) {
+        guard let range = item["range"] as? [String: Any],
+              let start = range["start"] as? [String: Int],
+              let end = range["end"] as? [String: Int],
+              let line = start["line"], let endLine = end["line"],
+              let text = item["newText"] as? String
+        else { return nil }
+        self.init(
+            line: line + 1, column: (start["character"] ?? 0) + 1,
+            endLine: endLine + 1, endColumn: (end["character"] ?? 0) + 1, text: text
+        )
     }
 }
 

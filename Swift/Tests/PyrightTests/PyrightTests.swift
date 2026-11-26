@@ -222,11 +222,68 @@ struct PyrightTests {
         #expect(keywords.contains { $0.label == "import" && $0.kind == .keyword })
     }
 
-    @Test func completesOnlyWhatsInScope() async {
+    @Test func marksWhatsOutOfScopeAsNeedingAnImport() async {
         let unimported = await Self.pyright.completions(in: "OrderedDi", line: 1, character: 9)
-        #expect(!unimported.contains { $0.label == "OrderedDict" }, "\(unimported.map(\.label))")
+        #expect(unimported.contains { $0.label == "OrderedDict" && $0.needsImport }, "\(unimported.map(\.label))")
         let imported = await Self.pyright.completions(in: "from collections import OrderedDict\nOrderedDi", line: 2, character: 9)
-        #expect(imported.contains { $0.label == "OrderedDict" })
+        #expect(imported.contains { $0.label == "OrderedDict" && !$0.needsImport })
+        #expect(!imported.contains { $0.label == "OrderedDict" && $0.needsImport })
+    }
+
+    static let views = Pyright(files: { [
+        "typings/views.pyi": """
+        from enum import StrEnum
+        class Color(StrEnum):
+            ACCENT = "accent"
+        class Window:
+            def foreground(self, color: Color) -> Window: ...
+        """,
+    ] })
+
+    /// `text` with `edits` made, the last first.
+    private func applying(_ edits: [Pyright.Edit], to text: String) -> String {
+        let text = NSMutableString(string: text)
+        let lines = (text as String).split(separator: "\n", omittingEmptySubsequences: false)
+        let offset = { (line: Int, column: Int) in
+            lines.prefix(line - 1).reduce(0) { $0 + $1.utf16.count + 1 } + column - 1
+        }
+        for edit in edits.reversed() {
+            let start = offset(edit.line, edit.column)
+            text.replaceCharacters(in: NSRange(location: start, length: offset(edit.endLine, edit.endColumn) - start), with: edit.text)
+        }
+        return text as String
+    }
+
+    @Test func addsAnEnumMembersClassToItsModulesImport() async throws {
+        let source = "from views import Window\nWindow().foreground(C"
+        let items = await Self.views.completions(in: source, line: 2, character: 21)
+        let accent = try #require(items.first { $0.label == "Color.ACCENT" }, "\(items.map(\.label))")
+        #expect(accent.needsImport)
+        let details = try #require(await Self.views.details(of: accent))
+        #expect(applying(details.edits, to: source) == "from views import Color, Window\nWindow().foreground(C")
+    }
+
+    /// The edits of each `OrderedDict` that needs an import, applied to `text`;
+    /// several modules have one.
+    private func importingOrderedDict(_ items: [Pyright.Completion], into text: String) async -> [String] {
+        var found: [String] = []
+        for item in items where item.label == "OrderedDict" && item.needsImport {
+            if let details = await Self.pyright.details(of: item) { found.append(applying(details.edits, to: text)) }
+        }
+        return found
+    }
+
+    @Test func importsAnUnimportedName() async {
+        let items = await Self.pyright.completions(in: "OrderedDi", line: 1, character: 9)
+        let found = await importingOrderedDict(items, into: "OrderedDi")
+        #expect(found.contains("from collections import OrderedDict\n\n\nOrderedDi"), "\(found)")
+    }
+
+    @Test func importsAtTheTopOfTheCell() async {
+        let cells = ["x = 1", "y = 2\nOrderedDi"]
+        let items = await Self.pyright.completions(inCells: cells, cell: 1, line: 2, character: 9)
+        let found = await importingOrderedDict(items, into: cells[1])
+        #expect(found.contains("from collections import OrderedDict\n\n\ny = 2\nOrderedDi"), "\(found)")
     }
 
     @Test(arguments: [
@@ -300,4 +357,5 @@ struct PyrightTests {
         #expect(items.contains { $0.label == "hello" })
     }
 }
+
 

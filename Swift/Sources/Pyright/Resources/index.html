@@ -57,10 +57,10 @@ window.start = async (files, config) => {
     initializationOptions: { files },
   });
   notify("initialized", {});
-  // No auto-import completions: nothing applies the import they need. A
+  // Auto-import completions, whose import comes from resolveCompletion. A
   // section given resets autoSearchPaths, so it's kept on.
   notify("workspace/didChangeConfiguration", {
-    settings: { basedpyright: { analysis: { autoImportCompletions: false, autoSearchPaths: true } } },
+    settings: { basedpyright: { analysis: { autoImportCompletions: true, autoSearchPaths: true } } },
   });
 };
 
@@ -151,14 +151,16 @@ function keepCompletions(result) {
   const generation = ++completionGeneration;
   return completionItems.map((item, index) => ({
     label: item.label, kind: item.kind ?? 0, sortText: item.sortText ?? item.label, generation, index,
+    needsImport: !!item.data?.autoImportText,
   }));
 }
-// A completion's signature and documentation; null once newer completions replaced it.
+// A completion's signature, documentation and import edits; null once newer
+// completions replaced it.
 window.resolveCompletion = async (generation, index) => {
   if (generation !== completionGeneration || !completionItems[index]) return null;
   const item = await request("completionItem/resolve", completionItems[index]);
   const documentation = typeof item?.documentation === "string" ? item.documentation : item?.documentation?.value;
-  return { detail: item?.detail ?? null, documentation: documentation ?? null };
+  return { detail: item?.detail ?? null, documentation: documentation ?? null, edits: item?.additionalTextEdits ?? [] };
 };
 window.completeInCell = async (uri, cells, cell, line, character) => {
   syncCells(uri, cells);
